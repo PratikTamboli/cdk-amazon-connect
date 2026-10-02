@@ -2,7 +2,6 @@ import * as crypto from 'crypto';
 import * as CDK from 'aws-cdk-lib';
 import * as IAM from 'aws-cdk-lib/aws-iam';
 import * as Lex from 'aws-cdk-lib/aws-lex';
-import * as Connect from 'aws-cdk-lib/aws-connect';
 import { ConnectLexBotAssociation } from "cdk-amazon-connect-resources";
 import { Construct } from 'constructs';
 
@@ -20,7 +19,7 @@ export class ConnectLexBot extends CDK.Resource {
         scope: Construct,
         id: string,
         props: Omit<Lex.CfnBotProps, 'roleArn'> & {
-            connectInstance: Connect.CfnInstance,
+            connectInstanceId: string,
         },
     ) {
         super(scope, id);
@@ -54,7 +53,7 @@ export class ConnectLexBot extends CDK.Resource {
          */
         const propsToHash: object = {
             ...props,
-            connectInstance: undefined,
+            connectInstanceId: undefined,
         }
         const propsHash = crypto.createHash('md5').update(JSON.stringify(propsToHash)).digest('hex').slice(0, 6);
 
@@ -86,7 +85,7 @@ export class ConnectLexBot extends CDK.Resource {
         });
 
         this.lexBotAssociation = new ConnectLexBotAssociation(this, 'lexBotAssociation', {
-            connectInstanceId: props.connectInstance.ref,
+            connectInstanceId: props.connectInstanceId,
             lexBotAliasArn: this.lexBotAlias.attrArn,
         });
     }
