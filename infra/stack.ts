@@ -1,13 +1,8 @@
 import * as CDK from 'aws-cdk-lib';
 import * as Lambda from 'aws-cdk-lib/aws-lambda';
 import * as Connect from 'aws-cdk-lib/aws-connect';
-import {
-    ConnectExistingPrompt,
-    ConnectFlowPhoneNumber,
-    ConnectQueue,
-    ConnectRoutingProfile,
-    ConnectSecurityProfile,
-} from "cdk-amazon-connect-resources";
+import { IConstruct } from 'constructs';
+import { ConnectExistingPrompt } from "cdk-amazon-connect-resources";
 import {transformAndValidateSync} from "class-transformer-validator";
 
 import {Environment} from "./environment";
@@ -27,18 +22,14 @@ const stack = new CDK.Stack(app, stackNameKebab, {
     }
 });
 
-const connectInstance = new Connect.CfnInstance(stack, 'connectInstance', {
-    attributes: {
-        inboundCalls: true,
-        outboundCalls: false,
-        contactflowLogs: true,
-    },
-    identityManagementType: 'CONNECT_MANAGED',
-    instanceAlias: stackNameKebab,
-});
+// Reusing the existing "contact-center-sandbox" Connect instance instead of
+// provisioning a new one, to practice adding flows/queue/security profile without
+// hitting the per-account Connect instance limit.
+const connectInstanceId =  environment.CONNECT_INSTANCE_ID;
+const connectInstanceArn = `arn:aws:connect:${environment.REGION}:${environment.ACCOUNT_ID}:instance/${connectInstanceId}`;
 
 const menuBot = new ConnectLexBot(stack, 'menuBot', {
-    connectInstance,
+    connectInstanceId,
     name: `${stackNameKebab}-menu`,
     autoBuildBotLocales: true,
     idleSessionTtlInSeconds: 123,
@@ -70,7 +61,7 @@ const menuBot = new ConnectLexBot(stack, 'menuBot', {
 });
 
 const getTodaysHoursLambda = new ConnectLambdaFunction(stack, 'getTodaysHoursLambda', {
-    connectInstance,
+    connectInstanceId,
     handler: 'handler',
     entry: './lambda/GetTodaysHours.ts',
     functionName: `${stackNameKebab}-todays-hours`,
@@ -79,7 +70,7 @@ const getTodaysHoursLambda = new ConnectLambdaFunction(stack, 'getTodaysHoursLam
 });
 
 const getTodaysSpecialsLambda = new ConnectLambdaFunction(stack, 'getTodaysSpecialsLambda', {
-    connectInstance,
+    connectInstanceId,
     handler: 'handler',
     entry: './lambda/GetTodaysSpecials.ts',
     functionName: `${stackNameKebab}-todays-specials`,
@@ -107,20 +98,20 @@ const queueHoursOfOperation = new Connect.CfnHoursOfOperation(stack, 'queueHours
             },
         }
     }),
-    instanceArn: connectInstance.attrArn,
+    instanceArn: connectInstanceArn,
     name: "QueueHoursOfOperation",
     timeZone: "America/New_York",
 })
 
-const queue = new ConnectQueue(stack, 'queue', {
-    InstanceId: connectInstance.attrId,
-    Name: "MainQueue",
-    HoursOfOperationId: queueHoursOfOperation.ref,
-    RemovalPolicy: CDK.RemovalPolicy.RETAIN,
+const queue = new Connect.CfnQueue(stack, 'queue', {
+    instanceArn: connectInstanceArn,
+    name: "MainQueue",
+    hoursOfOperationArn: queueHoursOfOperation.attrHoursOfOperationArn,
 });
+queue.applyRemovalPolicy(CDK.RemovalPolicy.RETAIN);
 
 const prompt = new ConnectExistingPrompt(stack, 'prompt', {
-    connectInstanceId: connectInstance.attrId,
+    connectInstanceId,
     promptName: "Music_Jazz_MyTimetoFly_Inst.wav",
 })
 
@@ -129,7 +120,7 @@ const queueFlow = new Connect.CfnContactFlow(stack, 'queueFlow', {
     state: 'ACTIVE',
     type: "CUSTOMER_QUEUE",
     content: generateQueueContactFlowContent(prompt),
-    instanceArn: connectInstance.attrArn,
+    instanceArn: connectInstanceArn,
 });
 
 const mainContactFlow = new Connect.CfnContactFlow(stack, 'mainContactFlow', {
@@ -140,52 +131,43 @@ const mainContactFlow = new Connect.CfnContactFlow(stack, 'mainContactFlow', {
         menuBot.lexBotAlias.attrArn,
         getTodaysHoursLambda.functionArn,
         getTodaysSpecialsLambda.functionArn,
-        queue.attrArn,
+        queue.attrQueueArn,
         queueFlow.attrContactFlowArn,
     ),
-    instanceArn: connectInstance.attrArn,
+    instanceArn: connectInstanceArn,
 });
 
-const connectPhoneNumber = new ConnectFlowPhoneNumber(stack, 'connectPhoneNumber', {
-    type: 'DID',
-    countryCode: 'US',
-    connectInstance,
-    contactFlow: mainContactFlow,
-});
+// Phone number intentionally omitted — reusing the existing instance's
+// number(s), and avoiding the recurring cost of provisioning a new DID.
 
-new CDK.CfnOutput(stack, 'phoneNumberOutput', {
-    exportName: `${stackNameKebab}-phone-number`,
-    value: connectPhoneNumber.attrAddress,
-});
-
-const routingProfile = new ConnectRoutingProfile(stack, 'routingProfile', {
-    InstanceId: connectInstance.attrId,
-    Name: 'DefaultRoutingProfile',
-    Description: "The default routing profile.",
-    DefaultOutboundQueueId: queue.attrId,
-    QueueConfigs: [
+const routingProfile = new Connect.CfnRoutingProfile(stack, 'routingProfile', {
+    instanceArn: connectInstanceArn,
+    name: 'DefaultRoutingProfile',
+    description: "The default routing profile.",
+    defaultOutboundQueueArn: queue.attrQueueArn,
+    queueConfigs: [
         {
-            Delay: 10,
-            Priority: 1,
-            QueueReference: {
-                Channel: "VOICE",
-                QueueId: queue.attrId,
+            delay: 10,
+            priority: 1,
+            queueReference: {
+                channel: "VOICE",
+                queueArn: queue.attrQueueArn,
             }
         },
     ],
-    MediaConcurrencies: [
+    mediaConcurrencies: [
         {
-            Channel: "VOICE",
-            Concurrency: 1,
+            channel: "VOICE",
+            concurrency: 1,
         }
     ],
-    RemovalPolicy: CDK.RemovalPolicy.RETAIN,
 });
+routingProfile.applyRemovalPolicy(CDK.RemovalPolicy.RETAIN);
 
-const securityProfile = new ConnectSecurityProfile(stack, 'securityProfile', {
-    InstanceId: connectInstance.attrId,
-    SecurityProfileName: "DefaultSecurityProfile",
-    Permissions: [
+const securityProfile = new Connect.CfnSecurityProfile(stack, 'securityProfile', {
+    instanceArn: connectInstanceArn,
+    securityProfileName: "DefaultSecurityProfile",
+    permissions: [
         "BasicAgentAccess",
         "OutboundCallAccess",
         "RoutingPolicies.View",
@@ -209,7 +191,7 @@ const securityProfile = new ConnectSecurityProfile(stack, 'securityProfile', {
 });
 
 new Connect.CfnUser(stack, 'Fred', {
-    instanceArn: connectInstance.attrArn,
+    instanceArn: connectInstanceArn,
     username: "fredjones",
     password: "cHANGEmE123", // Needs 8+, one upper, one lower, one digit
     identityInfo: {
@@ -220,10 +202,24 @@ new Connect.CfnUser(stack, 'Fred', {
     phoneConfig: {
         phoneType: 'SOFT_PHONE',
     },
-    routingProfileArn: routingProfile.attrArn,
+    routingProfileArn: routingProfile.attrRoutingProfileArn,
     securityProfileArns: [
-        securityProfile.attrArn
+        securityProfile.attrSecurityProfileArn
     ],
 })
+
+// cdk-amazon-connect-resources' shared ConnectCustomResourceLambda (backing
+// prompt, the Lex bot association, and both Lambda function associations)
+// has no memorySize set and defaults to 128MB, which was OOM-killed
+// ("signal: killed") on the last deploy attempt. Bump it directly since
+// there's no prop on those constructs to set it ourselves.
+class IncreaseCustomResourceLambdaMemory implements CDK.IAspect {
+    visit(node: IConstruct): void {
+        if (node instanceof Lambda.CfnFunction && node.node.path.includes('ConnectCustomResourceLambda')) {
+            node.addPropertyOverride('MemorySize', 512);
+        }
+    }
+}
+CDK.Aspects.of(stack).add(new IncreaseCustomResourceLambdaMemory());
 
 app.synth();

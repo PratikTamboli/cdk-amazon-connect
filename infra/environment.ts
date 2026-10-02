@@ -8,4 +8,6 @@ export class Environment {
     @IsString()
     REGION!: string;
 
+    @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    CONNECT_INSTANCE_ID!: string;
 }

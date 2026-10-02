@@ -15,8 +15,8 @@
   "dependencies": {
     "@types/aws-lambda": "^8.10.109",
     "@types/node": "^18.11.12",
-    "aws-cdk": "^2.54.0",
-    "aws-cdk-lib": "^2.54.0",
+    "aws-cdk": "^2.270.0",
+    "aws-cdk-lib": "^2.270.0",
     "cdk-amazon-connect-resources": "^0.1.0",
     "class-transformer": "^0.5.1",
     "class-transformer-validator": "^0.9.1",
